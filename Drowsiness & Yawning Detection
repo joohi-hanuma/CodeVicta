@@ -1,0 +1,909 @@
+import cv2
+import mediapipe as mp
+import time
+import threading
+import pygame
+import math
+import sys
+import os
+from scipy.spatial import distance as dist
+from collections import deque
+import serial
+import serial.tools.list_ports
+import pandas as pd
+import logging
+from datetime import datetime
+import warnings
+import numpy as np
+
+# Suppress warnings for cleaner output
+warnings.filterwarnings("ignore")
+
+
+class DrowsinessYawningDetector:
+    """
+    Complete Drowsiness and Yawning Detection System
+    """
+
+    def __init__(self):  # Fixed: was _init_ should be __init__
+        """Initialize the detection system with all components"""
+        print("=" * 60)
+        print("DROWSINESS & YAWNING DETECTION ALERT SYSTEM")
+        print("=" * 60)
+        print("Initializing system components...")
+
+        # Configure logging
+        self.setup_logging()
+
+        # Detection parameters - Configurable thresholds
+        self.EYE_AR_THRESHOLD = 0.25  # Eye Aspect Ratio threshold for drowsiness
+        self.MOUTH_AR_THRESHOLD = 0.6  # Mouth Aspect Ratio threshold for yawning
+        self.CONSECUTIVE_FRAMES_THRESHOLD = 20  # Frames needed to trigger drowsiness alert
+        self.YAWN_FRAMES_THRESHOLD = 15  # Frames needed to trigger yawning alert
+        self.ALERT_COOLDOWN = 3  # Seconds between alerts
+
+        # MediaPipe Face Mesh setup
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        self.mp_drawing = mp.solutions.drawing_utils
+
+        # Face landmark indices for MediaPipe Face Mesh (468 landmarks)
+        # Left eye landmarks (6-point EAR calculation)
+        self.LEFT_EYE = [362, 385, 387, 263, 373, 380]  # outer_corner, top, top, inner_corner, bottom, bottom
+        # Right eye landmarks (6-point EAR calculation)
+        self.RIGHT_EYE = [33, 160, 158, 133, 153, 144]  # outer_corner, top, top, inner_corner, bottom, bottom
+
+        # Alternative comprehensive eye landmarks for better detection
+        self.LEFT_EYE_FULL = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+        self.RIGHT_EYE_FULL = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+
+        # Mouth landmarks for yawning detection
+        self.MOUTH = [61, 84, 17, 314, 405, 320, 307, 375, 321, 308, 324, 318]
+
+        # State tracking variables
+        self.closed_eyes_frame_counter = 0
+        self.yawn_frame_counter = 0
+        self.drowsiness_detected = False
+        self.yawning_detected = False
+        self.alert_active = False
+        self.last_alert_time = 0
+        self.total_drowsiness_alerts = 0
+        self.total_yawn_alerts = 0
+
+        # Moving average for smoothing detection
+        self.ear_history = deque(maxlen=10)
+        self.mar_history = deque(maxlen=10)
+
+        # Performance tracking
+        self.frame_count = 0
+        self.fps_start_time = time.time()
+        self.current_fps = 0
+
+        # Data logging for analysis
+        self.detection_data = []
+
+        # Initialize components
+        self.setup_camera()
+        self.setup_audio_system()
+        self.setup_usb_relay()
+
+        print("✓ System initialization complete!")
+        print(f"✓ Eye AR Threshold: {self.EYE_AR_THRESHOLD}")
+        print(f"✓ Mouth AR Threshold: {self.MOUTH_AR_THRESHOLD}")
+        print(f"✓ Drowsiness Frame Threshold: {self.CONSECUTIVE_FRAMES_THRESHOLD}")
+        print(f"✓ Yawn Frame Threshold: {self.YAWN_FRAMES_THRESHOLD}")
+        print("-" * 60)
+
+    def setup_logging(self):
+        """Setup logging configuration"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(f'drowsiness_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+        self.logger = logging.getLogger(__name__)  # Fixed: was _name_ should be __name__
+
+    def setup_camera(self):
+        """Initialize laptop webcam"""
+        print("Setting up camera...")
+        try:
+            self.camera = cv2.VideoCapture(0)  # Default camera
+
+            if not self.camera.isOpened():
+                raise Exception("Could not access camera")
+
+            # Set camera properties for optimal performance
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.camera.set(cv2.CAP_PROP_FPS, 30)
+
+            # Test camera capture
+            ret, test_frame = self.camera.read()
+            if not ret:
+                raise Exception("Could not capture test frame")
+
+            print("✓ Camera initialized successfully")
+            self.logger.info("Camera setup completed")
+
+        except Exception as e:
+            print(f"✗ Camera setup failed: {e}")
+            self.logger.error(f"Camera setup failed: {e}")
+            sys.exit(1)
+
+    def setup_audio_system(self):
+        """Initialize audio system for laptop speakers - FIXED VERSION"""
+        print("Setting up audio system for laptop speakers...")
+        try:
+            # Initialize pygame mixer with proper settings
+            pygame.mixer.pre_init(frequency=22050, size=-16, channels=2, buffer=512)
+            pygame.mixer.init()
+
+            print("✓ Pygame mixer initialized")
+
+            # Create simple and effective alert sounds
+            self.create_alert_sounds()
+
+            print("✓ Audio system initialized for laptop speakers")
+            print("  - Alert beep created")
+            print("  - Emergency siren sound created")
+            print("  - Volume optimized for laptop speakers")
+            self.logger.info("Audio system setup completed for laptop speakers")
+
+        except Exception as e:
+            print(f"✗ Audio setup failed: {e}")
+            self.logger.error(f"Audio setup failed: {e}")
+            self.alert_beep = None
+            self.emergency_siren = None
+
+    def create_alert_sounds(self):
+        """Create alert sounds using numpy for better compatibility"""
+        try:
+            sample_rate = 22050
+            duration = 1.0
+
+            # Create alert beep
+            frames = int(duration * sample_rate)
+            frequency = 1000  # 1kHz tone
+
+            # Generate sine wave
+            wave_array = np.sin(2 * np.pi * frequency * np.linspace(0, duration, frames))
+
+            # Apply envelope to prevent clicks
+            envelope = np.hanning(frames)
+            wave_array = wave_array * envelope * 0.5  # Reduce volume to prevent clipping
+
+            # Convert to 16-bit integers
+            wave_array = (wave_array * 32767).astype(np.int16)
+
+            # Create stereo array
+            stereo_array = np.array([wave_array, wave_array]).T
+
+            # Create pygame sound
+            self.alert_beep = pygame.sndarray.make_sound(stereo_array)
+
+            # Create emergency siren (frequency sweep)
+            siren_duration = 2.0
+            siren_frames = int(siren_duration * sample_rate)
+            t = np.linspace(0, siren_duration, siren_frames)
+
+            # Create frequency sweep from 400Hz to 1000Hz and back
+            freq_sweep = 400 + 600 * (0.5 + 0.5 * np.sin(2 * np.pi * 0.5 * t))
+            siren_wave = np.sin(2 * np.pi * freq_sweep * t)
+
+            # Apply envelope
+            siren_envelope = np.hanning(siren_frames)
+            siren_wave = siren_wave * siren_envelope * 0.5
+
+            # Convert to 16-bit integers
+            siren_wave = (siren_wave * 32767).astype(np.int16)
+
+            # Create stereo array
+            siren_stereo = np.array([siren_wave, siren_wave]).T
+
+            # Create pygame sound
+            self.emergency_siren = pygame.sndarray.make_sound(siren_stereo)
+
+            print("✓ Alert sounds created successfully")
+
+        except Exception as e:
+            print(f"Error creating alert sounds: {e}")
+            self.alert_beep = None
+            self.emergency_siren = None
+
+    def setup_usb_relay(self):
+        """Initialize USB relay module for vibration control"""
+        print("Setting up USB relay module...")
+        self.relay_connection = None
+
+        try:
+            # Auto-detect USB relay module
+            available_ports = serial.tools.list_ports.comports()
+            print(f"Scanning {len(available_ports)} available ports...")
+
+            for port in available_ports:
+                print(f"Testing port: {port.device} - {port.description}")
+                try:
+                    # Test connection to each port
+                    test_connection = serial.Serial(
+                        port=port.device,
+                        baudrate=9600,
+                        timeout=1,
+                        write_timeout=1
+                    )
+
+                    # Send test command
+                    test_connection.write(b'\xA0\x01\x00\xA1')  # Turn OFF relay
+                    test_connection.close()
+
+                    # If successful, establish permanent connection
+                    self.relay_connection = serial.Serial(
+                        port=port.device,
+                        baudrate=9600,
+                        timeout=1,
+                        write_timeout=1
+                    )
+
+                    print(f"✓ USB Relay connected on {port.device}")
+                    self.logger.info(f"USB Relay connected on {port.device}")
+                    break
+
+                except (serial.SerialException, OSError) as e:
+                    continue
+
+            if self.relay_connection is None:
+                print("⚠ USB Relay module not found - vibration alerts disabled")
+                print("  System will continue with audio alerts only")
+                self.logger.warning("USB Relay module not detected")
+
+        except Exception as e:
+            print(f"✗ USB Relay setup error: {e}")
+            self.logger.error(f"USB Relay setup error: {e}")
+
+    def calculate_eye_aspect_ratio(self, landmarks, eye_indices):
+        """
+        Calculate Eye Aspect Ratio (EAR) for drowsiness detection
+        Uses 6-point eye landmark method: EAR = (|p2-p6| + |p3-p5|) / (2 * |p1-p4|)
+        """
+        try:
+            # Get the 6 key points for EAR calculation
+            if len(eye_indices) >= 6:
+                # Use the 6-point method for more accurate EAR
+                points = []
+                for i in range(6):
+                    landmark = landmarks[eye_indices[i]]
+                    points.append([landmark.x, landmark.y])
+
+                # Calculate distances
+                # Vertical distances (height of eye)
+                A = dist.euclidean(points[1], points[5])  # Top to bottom (left side)
+                B = dist.euclidean(points[2], points[4])  # Top to bottom (right side)
+
+                # Horizontal distance (width of eye)
+                C = dist.euclidean(points[0], points[3])  # Corner to corner
+
+                # Calculate EAR
+                ear = (A + B) / (2.0 * C)
+                return ear
+            else:
+                # Fallback: use simpler 4-point method
+                return self.calculate_simple_ear(landmarks, eye_indices)
+
+        except Exception as e:
+            self.logger.error(f"EAR calculation error: {e}")
+            return 0.3  # Return default value on error
+
+    def calculate_simple_ear(self, landmarks, eye_indices):
+        """Simple EAR calculation using basic eye points"""
+        try:
+            # Use first 4 points: left corner, top, right corner, bottom
+            if len(eye_indices) >= 4:
+                left_corner = [landmarks[eye_indices[0]].x, landmarks[eye_indices[0]].y]
+                top = [landmarks[eye_indices[1]].x, landmarks[eye_indices[1]].y]
+                right_corner = [landmarks[eye_indices[2]].x, landmarks[eye_indices[2]].y]
+                bottom = [landmarks[eye_indices[3]].x, landmarks[eye_indices[3]].y]
+
+                # Calculate vertical distance (height)
+                vertical_dist = dist.euclidean(top, bottom)
+
+                # Calculate horizontal distance (width)
+                horizontal_dist = dist.euclidean(left_corner, right_corner)
+
+                # EAR = height / width (simplified)
+                if horizontal_dist == 0:
+                    return 0.3
+
+                ear = vertical_dist / horizontal_dist
+                return ear
+            else:
+                return 0.3
+
+        except Exception as e:
+            return 0.3
+
+    def draw_eye_landmarks(self, frame, landmarks):
+        """Draw eye landmarks for debugging"""
+        try:
+            # Convert frame dimensions for landmark scaling
+            h, w = frame.shape[:2]
+
+            # Draw left eye landmarks
+            for idx in self.LEFT_EYE:
+                x = int(landmarks[idx].x * w)
+                y = int(landmarks[idx].y * h)
+                cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)
+
+            # Draw right eye landmarks
+            for idx in self.RIGHT_EYE:
+                x = int(landmarks[idx].x * w)
+                y = int(landmarks[idx].y * h)
+                cv2.circle(frame, (x, y), 2, (0, 255, 255), -1)
+
+            # Connect eye points with lines for better visualization
+            # Left eye outline
+            left_points = []
+            for idx in self.LEFT_EYE_FULL[:6]:  # Use first 6 points for outline
+                x = int(landmarks[idx].x * w)
+                y = int(landmarks[idx].y * h)
+                left_points.append([x, y])
+
+            if len(left_points) >= 4:
+                cv2.polylines(frame, [np.array(left_points, dtype=np.int32)], True, (0, 255, 0), 1)
+
+            # Right eye outline
+            right_points = []
+            for idx in self.RIGHT_EYE_FULL[:6]:  # Use first 6 points for outline
+                x = int(landmarks[idx].x * w)
+                y = int(landmarks[idx].y * h)
+                right_points.append([x, y])
+
+            if len(right_points) >= 4:
+                cv2.polylines(frame, [np.array(right_points, dtype=np.int32)], True, (0, 255, 255), 1)
+
+        except Exception as e:
+            self.logger.error(f"Error drawing eye landmarks: {e}")
+
+    def calculate_mouth_aspect_ratio(self, landmarks):
+        """
+        Calculate Mouth Aspect Ratio (MAR) for yawning detection
+        MAR = |mouth_height| / |mouth_width|
+        """
+        try:
+            # More accurate mouth landmarks for MediaPipe Face Mesh
+            # Upper lip: 13, 14, 269, 270, 267, 271
+            # Lower lip: 17, 18, 200, 199
+            mouth_landmarks = [
+                13,  # Upper lip center
+                14,  # Lower lip center
+                61,  # Upper lip left
+                291,  # Upper lip right
+                17,  # Lower lip center
+                18  # Lower lip center
+            ]
+
+            mouth_points = []
+            for idx in mouth_landmarks:
+                if idx < len(landmarks):
+                    x = landmarks[idx].x
+                    y = landmarks[idx].y
+                    mouth_points.append([x, y])
+
+            if len(mouth_points) >= 4:
+                # Calculate mouth height (vertical distance)
+                mouth_height = dist.euclidean(mouth_points[0], mouth_points[1])  # Top to bottom
+
+                # Calculate mouth width (horizontal distance)
+                mouth_width = dist.euclidean(mouth_points[2], mouth_points[3])  # Left to right
+
+                # Calculate MAR
+                if mouth_width == 0:
+                    return 0.3
+
+                mar = mouth_height / mouth_width
+                return mar
+            else:
+                return 0.3
+
+        except Exception as e:
+            self.logger.error(f"MAR calculation error: {e}")
+            return 0.3
+
+    def trigger_audio_alert(self, alert_type="normal"):
+        """Play optimized audio alert through laptop speakers - FIXED VERSION"""
+        try:
+            print(f"🔊 Playing {alert_type} audio alert...")
+
+            if alert_type == "emergency" and hasattr(self, 'emergency_siren') and self.emergency_siren:
+                # Play emergency siren for critical alerts
+                self.emergency_siren.play()
+                self.logger.info("Emergency siren alert triggered")
+                print("🚨 Emergency siren playing")
+            elif hasattr(self, 'alert_beep') and self.alert_beep:
+                # Play standard alert
+                self.alert_beep.play()
+                self.logger.info("Alert beep triggered")
+                print("🔔 Alert beep playing")
+            else:
+                print("⚠ No audio alert available - using fallback methods")
+
+            # Add system-specific fallback sounds
+            self.play_system_beep()
+
+        except Exception as e:
+            self.logger.error(f"Audio alert error: {e}")
+            print(f"Audio error: {e}")
+            # Fallback: print audible alert to console
+            print("\a" * 5)  # Terminal bell sounds
+
+    def play_system_beep(self):
+        """Play system beep as fallback"""
+        try:
+            # Try different system beep methods based on OS
+            import platform
+            system = platform.system().lower()
+
+            if system == "windows":
+                try:
+                    import winsound
+                    winsound.Beep(1000, 500)  # 1000Hz for 500ms
+                    print("✓ Windows system beep played")
+                except ImportError:
+                    pass
+            elif system == "darwin":  # macOS
+                try:
+                    os.system('afplay /System/Library/Sounds/Glass.aiff')
+                    print("✓ macOS system sound played")
+                except:
+                    os.system('say "Alert! Driver drowsiness detected!"')
+            elif system == "linux":
+                try:
+                    os.system('paplay /usr/share/sounds/alsa/Front_Left.wav')
+                    print("✓ Linux system sound played")
+                except:
+                    os.system('echo -e "\a"')
+
+        except Exception as e:
+            print(f"System beep error: {e}")
+
+    def trigger_vibration_alert(self):
+        """Activate vibration motor through USB relay"""
+        if self.relay_connection:
+            try:
+                # Turn ON relay (activate vibration)
+                self.relay_connection.write(b'\xA0\x01\x01\xA2')
+                self.logger.info("Vibration ON")
+
+                # Vibrate for 1 second
+                time.sleep(1.0)
+
+                # Turn OFF relay (stop vibration)
+                self.relay_connection.write(b'\xA0\x01\x00\xA1')
+                self.logger.info("Vibration OFF")
+
+            except Exception as e:
+                self.logger.error(f"Vibration alert error: {e}")
+
+    def trigger_dual_alert(self, alert_type):
+        """
+        Trigger both audio and vibration alerts - IMPROVED VERSION
+        Implements cooldown to prevent alert spam
+        """
+        current_time = time.time()
+
+        # Check if cooldown period has passed
+        if current_time - self.last_alert_time < self.ALERT_COOLDOWN:
+            return
+
+        self.alert_active = True
+        self.last_alert_time = current_time
+
+        print(f"\n{'=' * 50}")
+        print(f"🚨 ALERT TRIGGERED: {alert_type}")
+        print(f"{'=' * 50}")
+
+        # Determine alert urgency
+        audio_urgency = "normal"
+        if alert_type == "DROWSINESS":
+            self.total_drowsiness_alerts += 1
+            self.logger.warning(f"DROWSINESS ALERT #{self.total_drowsiness_alerts}")
+            print(f"🚨 DROWSINESS DETECTED! Alert #{self.total_drowsiness_alerts}")
+            # Drowsiness is more critical - use emergency sound
+            if self.total_drowsiness_alerts > 2:
+                audio_urgency = "emergency"
+        elif alert_type == "YAWNING":
+            self.total_yawn_alerts += 1
+            self.logger.warning(f"YAWNING ALERT #{self.total_yawn_alerts}")
+            print(f"🚨 YAWNING DETECTED! Alert #{self.total_yawn_alerts}")
+            # Multiple yawns indicate fatigue - escalate to emergency
+            if self.total_yawn_alerts > 3:
+                audio_urgency = "emergency"
+
+        # Trigger audio alert immediately
+        self.trigger_audio_alert(audio_urgency)
+
+        # Trigger vibration alert in separate thread (non-blocking)
+        if self.relay_connection:
+            vibration_thread = threading.Thread(target=self.trigger_vibration_alert)
+            vibration_thread.daemon = True
+            vibration_thread.start()
+        else:
+            # If no vibration available, play additional audio alerts
+            def delayed_audio():
+                time.sleep(0.5)
+                self.trigger_audio_alert("normal")
+                time.sleep(0.5)
+                self.trigger_audio_alert("normal")
+
+            audio_thread = threading.Thread(target=delayed_audio)
+            audio_thread.daemon = True
+            audio_thread.start()
+
+        # Reset alert state after delay
+        def reset_alert():
+            time.sleep(2.0)
+            self.alert_active = False
+            print("Alert state reset")
+
+        reset_thread = threading.Thread(target=reset_alert)
+        reset_thread.daemon = True
+        reset_thread.start()
+
+    def process_detection_frame(self, frame):
+        """
+        Main detection processing for each camera frame
+        Returns processed frame with overlays
+        """
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.face_mesh.process(rgb_frame)
+
+        # Initialize status variables
+        status_text = "Status: Monitoring..."
+        status_color = (0, 255, 0)  # Green for normal
+        ear_value = 0.0
+        mar_value = 0.0
+
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                landmarks = face_landmarks.landmark
+
+                # Calculate Eye Aspect Ratios for both eyes
+                left_ear = self.calculate_eye_aspect_ratio(landmarks, self.LEFT_EYE)
+                right_ear = self.calculate_eye_aspect_ratio(landmarks, self.RIGHT_EYE)
+                avg_ear = (left_ear + right_ear) / 2.0
+
+                # Calculate Mouth Aspect Ratio
+                mar = self.calculate_mouth_aspect_ratio(landmarks)
+
+                # Add to history for smoothing
+                self.ear_history.append(avg_ear)
+                self.mar_history.append(mar)
+
+                # Calculate smoothed values
+                ear_values = list(self.ear_history) if self.ear_history else [avg_ear]
+                mar_values = list(self.mar_history) if self.mar_history else [mar]
+
+                smooth_ear = sum(ear_values) / len(ear_values)
+                smooth_mar = sum(mar_values) / len(mar_values)
+
+                ear_value = smooth_ear
+                mar_value = smooth_mar
+
+                # Debug output for EAR values
+                if self.frame_count % 30 == 0:  # Print every 30 frames
+                    print(
+                        f"DEBUG - Left EAR: {left_ear:.3f}, Right EAR: {right_ear:.3f}, Avg: {avg_ear:.3f}, Threshold: {self.EYE_AR_THRESHOLD}")
+
+                # Draw eye landmarks for debugging (optional)
+                self.draw_eye_landmarks(frame, landmarks)
+
+                # DROWSINESS DETECTION LOGIC
+                if smooth_ear < self.EYE_AR_THRESHOLD:
+                    self.closed_eyes_frame_counter += 1
+
+                    if self.closed_eyes_frame_counter >= self.CONSECUTIVE_FRAMES_THRESHOLD:
+                        if not self.drowsiness_detected:
+                            self.trigger_dual_alert("DROWSINESS")
+                            self.drowsiness_detected = True
+                        status_text = "🚨 ALERT: DROWSINESS DETECTED!"
+                        status_color = (0, 0, 255)  # Red
+                else:
+                    self.closed_eyes_frame_counter = 0
+                    self.drowsiness_detected = False
+
+                # YAWNING DETECTION LOGIC
+                if smooth_mar > self.MOUTH_AR_THRESHOLD:
+                    self.yawn_frame_counter += 1
+
+                    if self.yawn_frame_counter >= self.YAWN_FRAMES_THRESHOLD:
+                        if not self.yawning_detected:
+                            self.trigger_dual_alert("YAWNING")
+                            self.yawning_detected = True
+                        status_text = "🚨 ALERT: YAWNING DETECTED!"
+                        status_color = (0, 165, 255)  # Orange
+                else:
+                    self.yawn_frame_counter = 0
+                    self.yawning_detected = False
+
+        # Log detection data for analysis
+        timestamp = datetime.now()
+        detection_record = {
+            'timestamp': timestamp,
+            'ear': ear_value,
+            'mar': mar_value,
+            'closed_eyes_frames': self.closed_eyes_frame_counter,
+            'yawn_frames': self.yawn_frame_counter,
+            'drowsiness_detected': self.drowsiness_detected,
+            'yawning_detected': self.yawning_detected
+        }
+        self.detection_data.append(detection_record)
+
+        # Draw information overlay on frame
+        self.draw_info_overlay(frame, ear_value, mar_value, status_text, status_color)
+
+        return frame
+
+    def draw_info_overlay(self, frame, ear, mar, status_text, status_color):
+        """Draw information overlay on the camera frame"""
+        height, width = frame.shape[:2]
+
+        # Draw semi-transparent background for info panel
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (10, 10), (400, 200), (0, 0, 0), -1)
+        frame = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
+
+        # System title
+        cv2.putText(frame, "DRIVER DROWSINESS DETECTION", (15, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        # Detection metrics
+        cv2.putText(frame, f"Eye AR: {ear:.3f} (Threshold: {self.EYE_AR_THRESHOLD})", (15, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, f"Mouth AR: {mar:.3f} (Threshold: {self.MOUTH_AR_THRESHOLD})", (15, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        # Frame counters
+        cv2.putText(frame, f"Closed Eyes: {self.closed_eyes_frame_counter}/{self.CONSECUTIVE_FRAMES_THRESHOLD}",
+                    (15, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, f"Yawn Count: {self.yawn_frame_counter}/{self.YAWN_FRAMES_THRESHOLD}", (15, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        # Alert statistics
+        cv2.putText(frame, f"Drowsiness Alerts: {self.total_drowsiness_alerts}", (15, 140),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, f"Yawn Alerts: {self.total_yawn_alerts}", (15, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        # FPS counter
+        cv2.putText(frame, f"FPS: {self.current_fps:.1f}", (15, 180),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        # Status message
+        cv2.putText(frame, status_text, (15, height - 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+
+        # Alert indicator border
+        if self.alert_active:
+            cv2.rectangle(frame, (0, 0), (width, height), (0, 0, 255), 8)
+
+        # Hardware status indicators
+        relay_status = "USB Relay: Connected" if self.relay_connection else "USB Relay: Disconnected"
+        audio_status = "Audio: Ready" if hasattr(self, 'alert_beep') and self.alert_beep else "Audio: Error"
+
+        cv2.putText(frame, relay_status, (width - 200, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0) if self.relay_connection else (0, 0, 255), 1)
+        cv2.putText(frame, audio_status, (width - 200, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                    (0, 255, 0) if hasattr(self, 'alert_beep') and self.alert_beep else (0, 0, 255), 1)
+
+    def calculate_fps(self):
+        """Calculate and update FPS counter"""
+        self.frame_count += 1
+        current_time = time.time()
+
+        if current_time - self.fps_start_time >= 1.0:
+            self.current_fps = self.frame_count / (current_time - self.fps_start_time)
+            self.frame_count = 0
+            self.fps_start_time = current_time
+
+    def save_detection_data(self):
+        """Save detection data to CSV for analysis"""
+        if self.detection_data:
+            try:
+                df = pd.DataFrame(self.detection_data)
+                filename = f"detection_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                df.to_csv(filename, index=False)
+                print(f"Detection data saved to: {filename}")
+                self.logger.info(f"Detection data saved to: {filename}")
+            except Exception as e:
+                self.logger.error(f"Error saving detection data: {e}")
+
+    def test_audio(self):
+        """Test audio system to make sure it's working"""
+        print("\n🔊 Testing audio system...")
+        try:
+            if hasattr(self, 'alert_beep') and self.alert_beep:
+                print("Playing test alert beep...")
+                self.alert_beep.play()
+                time.sleep(1.5)
+
+            if hasattr(self, 'emergency_siren') and self.emergency_siren:
+                print("Playing test emergency siren...")
+                self.emergency_siren.play()
+                time.sleep(2.5)
+
+            print("✓ Audio test completed")
+        except Exception as e:
+            print(f"✗ Audio test failed: {e}")
+
+    def run_detection_system(self):
+        """
+        Main system loop - captures frames and processes detection
+        """
+        print("\n" + "=" * 60)
+        print("STARTING REAL-TIME DETECTION")
+        print("=" * 60)
+        print("Instructions:")
+        print("• Press 'q' to quit")
+        print("• Press 's' to save current frame")
+        print("• Press 'r' to reset alert counters")
+        print("• Press 'd' to save detection data")
+        print("• Press 'e' to toggle eye landmark visualization")
+        print("• Press 'a' to adjust EAR threshold")
+        print("• Press 't' to test audio system")
+        print("• System will automatically detect drowsiness and yawning")
+        print("-" * 60)
+
+        # Add debugging variables
+        self.show_eye_landmarks = True
+        self.debug_mode = True
+
+        # Test audio on startup
+        self.test_audio()
+
+        try:
+            while True:
+                # Capture frame from camera
+                ret, frame = self.camera.read()
+                if not ret:
+                    self.logger.error("Failed to capture frame")
+                    break
+
+                # Flip frame horizontally for natural mirror view
+                frame = cv2.flip(frame, 1)
+
+                # Process frame for detection
+                processed_frame = self.process_detection_frame(frame)
+
+                # Update FPS counter
+                self.calculate_fps()
+
+                # Display the frame
+                cv2.imshow('Drowsiness & Yawning Detection System', processed_frame)
+
+                # Handle keyboard input
+                key = cv2.waitKey(1) & 0xFF
+
+                if key == ord('q'):
+                    print("Quit command received")
+                    break
+                elif key == ord('s'):
+                    # Save current frame
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"detection_frame_{timestamp}.jpg"
+                    cv2.imwrite(filename, processed_frame)
+                    print(f"Frame saved: {filename}")
+                elif key == ord('r'):
+                    # Reset counters
+                    self.closed_eyes_frame_counter = 0
+                    self.yawn_frame_counter = 0
+                    self.total_drowsiness_alerts = 0
+                    self.total_yawn_alerts = 0
+                    print("Alert counters reset")
+                elif key == ord('d'):
+                    # Save detection data
+                    self.save_detection_data()
+                elif key == ord('t'):
+                    # Test audio system
+                    self.test_audio()
+                elif key == ord('e'):
+                    # Toggle eye landmark visualization
+                    self.show_eye_landmarks = not self.show_eye_landmarks
+                    print(f"Eye landmarks visualization: {'ON' if self.show_eye_landmarks else 'OFF'}")
+                elif key == ord('a'):
+                    # Adjust EAR threshold
+                    print(f"Current EAR threshold: {self.EYE_AR_THRESHOLD}")
+                    try:
+                        new_threshold = float(input("Enter new EAR threshold (0.1-0.4): "))
+                        if 0.1 <= new_threshold <= 0.4:
+                            self.EYE_AR_THRESHOLD = new_threshold
+                            print(f"EAR threshold set to: {self.EYE_AR_THRESHOLD}")
+                        else:
+                            print("Invalid threshold range")
+                    except ValueError:
+                        print("Invalid input")
+
+        except KeyboardInterrupt:
+            print("\nSystem interrupted by user")
+        except Exception as e:
+            self.logger.error(f"System error: {e}")
+            print(f"System error: {e}")
+        finally:
+            self.cleanup_system()
+
+    def cleanup_system(self):
+        """Clean up all system resources"""
+        print("\nCleaning up system resources...")
+
+        try:
+            # Release camera
+            if hasattr(self, 'camera') and self.camera:
+                self.camera.release()
+                print("✓ Camera released")
+
+            # Close relay connection and ensure it's turned off
+            if self.relay_connection:
+                try:
+                    self.relay_connection.write(b'\xA0\x01\x00\xA1')  # Turn OFF
+                    self.relay_connection.close()
+                    print("✓ USB Relay disconnected")
+                except:
+                    pass
+
+            # Close OpenCV windows
+            cv2.destroyAllWindows()
+            print("✓ Display windows closed")
+
+            # Quit pygame
+            if pygame.mixer.get_init():
+                pygame.mixer.quit()
+                print("✓ Audio system closed")
+
+            # Save final detection data
+            self.save_detection_data()
+
+            # Print final statistics
+            print("\n" + "=" * 50)
+            print("SESSION SUMMARY")
+            print("=" * 50)
+            print(f"Total Drowsiness Alerts: {self.total_drowsiness_alerts}")
+            print(f"Total Yawning Alerts: {self.total_yawn_alerts}")
+            print(f"Detection Records: {len(self.detection_data)}")
+            print("System shutdown complete!")
+            print("=" * 50)
+
+            self.logger.info("System cleanup completed successfully")
+
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+            self.logger.error(f"Cleanup error: {e}")
+
+
+def main():
+    """
+    Main function to run the Drowsiness & Yawning Detection Alert System
+    """
+    print("Python Version:", sys.version)
+    print("OpenCV Version:", cv2.__version__)
+
+    try:
+        # Create and run detection system
+        detector = DrowsinessYawningDetector()
+        detector.run_detection_system()
+
+    except Exception as e:
+        print(f"Fatal system error: {e}")
+        logging.error(f"Fatal system error: {e}")
+    finally:
+        print("Program terminated")
+
+
+if __name__ == "__main__":  # Fixed: was _name_ should be __name__
+    main()
