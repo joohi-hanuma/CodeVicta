@@ -1,5 +1,5 @@
 Drowsiness & Yawning Detection with USB Vibration Alert
-📌 Overview:
+📌 Overview: 
 
 This project is a real-time driver safety monitoring system that detects drowsiness and yawning using a webcam feed.
 When a detection is made, the system sends a signal to a USB relay module, which triggers a USB vibration motor to alert the driver.
