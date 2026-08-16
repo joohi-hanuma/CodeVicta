@@ -27,15 +27,8 @@ No Special Camera Needed → Works with any USB webcam.
   
 * Required Python libraries for computer vision and data processing
 
-
-# Libraries:
-
-pip install opencv-python mediapipe pandas pyserial
-
-
-USB Relay Driver (most modules are plug-and-play, some may need a driver)
-
 # ⚙️ How It Works
+
 1. The webcam captures the driver's face in real time.
 
 2. MediaPipe detects facial landmarks around the eyes and mouth.
