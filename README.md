@@ -1,11 +1,9 @@
 # Drowsiness & Yawning Detection Alert 
+# Objective:
 
-# 📌 Overview: 
+This project is a real-time driver safety monitoring system that detects drowsiness and yawning using a webcam feed. It analyzes facial landmarks to identify signs of fatigue and triggers a beep sound alert when drowsiness or yawning is detected.
 
-This project is a real-time driver safety monitoring system that detects drowsiness and yawning using a webcam feed.
-When a detection is made, the system sends a signal to a USB relay module, which triggers a USB vibration motor to alert the driver.
-
-Designed to be low-cost, portable, and easy to integrate with laptops or embedded systems like the Jetson Nano.
+The system is designed to be simple, lightweight, and easy to use with a USB webcam.
 
 # 🚗 Features:
 
@@ -17,21 +15,18 @@ Real-Time Alerts → Activates vibration motor through USB relay module.
 
 Adjustable Sensitivity → EAR and MAR thresholds can be customized.
 
-No Special Camera Needed → Works with laptop webcam or any USB webcam.
+No Special Camera Needed → Works with any USB webcam.
 
-# 🛠 Hardware Requirements:
+# 💻 Requirements
 
-USB Relay Module (1-channel, 5V)
+* Laptop or PC
+  
+* Built-in or USB webcam
+  
+* Python 3.11.9
+  
+* Required Python libraries for computer vision and data processing
 
-USB Vibration Motor (USB powered)
-
-USB A-to-B Cable (printer-style) for connecting relay to laptop
-
-Laptop/PC with USB ports and webcam
-
-# 💻 Software Requirements:
-
-Python 3.11.9
 
 # Libraries:
 
@@ -40,50 +35,39 @@ pip install opencv-python mediapipe pandas pyserial
 
 USB Relay Driver (most modules are plug-and-play, some may need a driver)
 
-# ⚙ How It Works
+# ⚙️ How It Works
+1. The webcam captures the driver's face in real time.
 
-Webcam captures driver’s face in real-time.
+2. MediaPipe detects facial landmarks around the eyes and mouth.
 
-MediaPipe detects facial landmarks for eyes and mouth.
+3. The system calculates Eye Aspect Ratio (EAR) to monitor eye closure.
 
-EAR & MAR values are calculated from the landmarks.
+4. The system calculates Mouth Aspect Ratio (MAR) to detect yawning.
 
-# If thresholds are crossed:
+5.When the defined thresholds are crossed, the system triggers a beep sound alert.
 
-Sends command to USB relay module via PySerial.
-
-Relay powers USB vibration motor → alerts driver.
-
-# 🔌 Circuit Connection Diagram:
-
-Laptop USB Port → USB A-to-B Cable → USB Relay Module
-
-Relay Output → USB Vibration Motor
-
-Vibration motor is powered only when relay is activated.
 
 # 📦 Libraries Used:
 
-Below are the Python libraries required for this project:
+- **OpenCV** – Webcam access and image processing.
+  
+- **MediaPipe** – Facial landmark detection.
+  
+- **SciPy** – Distance calculations for EAR and MAR.
+  
+- **NumPy** – Numerical operations.
+  
+- **Pandas** – Detection data handling.
+  
+- **Pygame** – Beep sound alerts.
 
-OpenCV – For video capturing, image processing, and face landmark detection.
-
-Mediapipe – For facial landmark detection (eyes and mouth).
-
-PySerial – For communication with external devices (e.g., DC motor, Arduino).
-
-SciPy – For calculating distances between facial landmarks (EAR, MAR).
-
-NumPy – For numerical operations.
-
-Pandas – For storing and analyzing detection data.
-
-Playsound / Pygame (optional) – For playing alert sounds.
-
+  
 # 📈 Future Improvements:
 
-Adjustable EAR/MAR thresholds via GUI.
-
-Multi-feature driver safety system (lane departure, collision detection).
-
-IoT integration for fleet monitoring.
+* **Add a GUI for adjusting EAR and MAR thresholds.**
+  
+* **Improve detection accuracy in different lighting conditions.**
+  
+* **Add additional driver-safety features such as lane-departure detection.**
+  
+* **Explore IoT-based monitoring in future versions.**
